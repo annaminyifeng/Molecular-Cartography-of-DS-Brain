@@ -1,0 +1,155 @@
+```{r}
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(patchwork)
+library(Matrix)
+library(DT)
+library(MAST)
+library(ggrepel)
+library(viridis)
+
+run_mast <- function(input_file, output_dir, cluster_labels){
+  
+  
+  
+  #Load Data
+  svz <- readRDS(input_file)
+  
+  #Create Output Directories
+  dir.create(output_dir)
+  setwd(output_dir)
+  
+  DefaultAssay(object = svz) <- "Vizgen"
+  svz <- FindVariableFeatures(svz)
+  svz$celltype<-svz$celltype
+  
+  cell_types <- unique(svz@meta.data$celltype)
+  
+  svz$group_celltype <- paste(svz$condition, svz$celltype, sep = "_")
+  des <- list()
+  
+  Idents(svz) <- svz$group_celltype
+  
+  for (celltype in cell_types) {
+    des[[celltype]] <- list()
+    DS <- paste0("DS_", celltype)
+    WT <- paste0("WT_", celltype)
+    comparisons <- list(DS_WT = c(DS, WT))
+    for (comparison in comparisons) {
+      name <- paste(comparison, collapse = "_vs_")
+      mast <- FindMarkers(svz, ident.1 = comparison[1], ident.2 = comparison[2], slot = "data",
+                          verbose = TRUE, test.use = "MAST", pseudocount.use = 1, logfc.threshold = 0,
+                          min.pct = 0.05)
+      des[[celltype]][[name]] <- mast
+    }
+  }
+
+  
+  des_collapsed<-list()
+  
+  for(celltype in names(des)){
+    
+    dat<-des[[celltype]]
+    
+    annotated_dat<-list()
+    
+    for(comparison in names(dat)){
+      
+      comp<-dat[[comparison]]
+      
+      comp$comparison<-gsub(paste0("_", celltype), "", comparison)
+      
+      comp$gene<-rownames(comp)
+      
+      comp$FDR<-p.adjust(comp$p_val, method = "fdr")
+      
+      comp$sig<-ifelse(comp$FDR<0.05 & abs(comp$avg_log2FC) >0.25  , T, F)
+      
+      comp$celltype<-celltype
+      
+      subclasses<-unlist(strsplit(x = comparison, split="_vs_"))
+      
+      cells<-subset(svz, idents = subclasses)
+      
+      expression <- as.data.frame(AverageExpression(cells, verbose = FALSE)$Vizgen)
+      colnames(expression)[1:2] <- c("exp.1", "exp.2")
+      expression$gene <- rownames(expression) #Add the gene column
+      #Calculate log2 fold change
+      comp <- left_join(comp, expression, by = "gene")
+      annotated_dat[[comparison]]<-comp
+    }
+    annotated_dat<-do.call("rbind", annotated_dat)
+    rownames(annotated_dat)<-c(1:nrow(annotated_dat))
+    des_collapsed[[celltype]]<-annotated_dat
+  }
+  des_collapsed<-do.call("rbind", des_collapsed)
+  rownames(des_collapsed)<-c(1:nrow(des_collapsed))
+  comparisons<-unique(des_collapsed$comparison)
+  celltype<-unique(des_collapsed$celltype)
+  combined<-expand.grid(comparisons, celltype)
+  colnames(combined)<-c("comparison", "celltype")
+  combined$N_sig <- NA
+  combined$csv <- NA
+  
+  dir.create("cell_expression_spreadsheet", recursive = T)
+  
+  for(i in 1:nrow(combined)){
+    comp<-as.character(combined$comparison[i])
+    cell<-as.character(combined$`celltype`[i])
+    cell<-gsub("/", ".", cell)
+    stages<-unlist(strsplit(comparison, "_vs_"))
+    df<-des_collapsed[des_collapsed$comparison==comp & des_collapsed$celltype==cell, ]
+    df <- df %>%
+      arrange(desc(avg_log2FC))
+    combined$N_sig[i]<-sum(df$sig)
+    csv_name<-paste0("cell_expression_spreadsheet/", comp, "_", cell, ".csv")
+    csv_name<-gsub(" ", "_", csv_name)
+    write.table(df, csv_name , col.names = T, row.names = F, quote = F, sep = ",")
+    
+    df$group <- with(df, ifelse(avg_log2FC > 0.25 & sig == TRUE, "up_sig", 
+                                ifelse(avg_log2FC > 0.25 & sig == FALSE, "up_non_sig",
+                                       ifelse(avg_log2FC <= 0.25 & sig == TRUE, "down_sig", "down_non_sig"))))
+    
+    volcano <- ggplot(df, aes(x=avg_log2FC, y=-log10(FDR), color=group)) +
+      geom_point() +
+      theme(legend.position="none")+
+      geom_text_repel(data = subset(df, group %in% c("up_sig", "down_sig")), 
+                      aes(label=gene), color="black") +
+      theme_minimal() +
+      theme(panel.grid.major = element_blank(), 
+            panel.grid.minor = element_blank(),
+            axis.line = element_line(color = "black")) +
+      ggtitle(cell) +
+      ylab("-log10(padj)") +
+      xlab("log2 Fold Change") +
+      scale_color_manual(values=c("up_sig"="red", "down_sig"="blue", "up_non_sig"="gray", "down_non_sig"="gray")) +
+      guides(color = FALSE) +
+      geom_hline(yintercept = -log10(0.05), alpha=0.5, linetype="dashed", color="gray")
+    volcano <- volcano +
+      geom_vline(xintercept = -0.25, alpha = 0.5, linetype = "dashed", color = "gray") +
+      geom_vline(xintercept = 0.25, alpha = 0.5, linetype = "dashed", color = "gray")
+    dir.create("volcano/")
+    volcano_name<-paste0("volcano/", comp, "_", cell, ".pdf" )
+    volcano_name<-gsub(" ", "_", volcano_name)
+    pdf(volcano_name, width = 6, height = 6)
+    print(volcano)
+    dev.off()
+    
+  }
+}
+
+
+ 
+```
+
+
+```{r}
+input_file = ".."
+
+output_dir = ".."
+
+run_mast(input_file, 
+         output_dir)
+plot_cell_expression_summary(output_dir)
+```

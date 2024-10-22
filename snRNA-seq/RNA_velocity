@@ -1,0 +1,112 @@
+
+#Install velocyto
+conda env create -f RNA_velocity_helper.yaml
+conda activate RNA_velocity_helper
+
+#Run command for each replicate
+velocyto run10x -@ 14 --samtools-memory 8000 ../ genes.gtf
+
+#in R, convert Seurat object into h5ad file
+#load libraries
+SaveH5Seurat(seur, filename = "prenatal_final.h5Seurat")
+Convert("prenatal_final.h5Seurat", dest = "h5ad")
+
+#Activate python
+python
+
+#Import scvelo
+import scvelo as scv
+
+#Change working directory to location of files
+import os
+print(os.getcwd())
+
+new_directory = '..'
+
+os.chdir(new_directory)
+print(os.getcwd())
+
+#Read H5ad file from Seurat
+import scanpy 
+adata = scanpy.read_h5ad("prenatal_final.h5ad")
+adata
+
+#Read loom file created from Velocyto 
+ldata = scv.read("..loom", cache = True)
+
+#Merge adata & ldata files
+adata = scv.utils.merge(adata, ldata)
+adata #view new object
+
+#Calculate spliced vs unspliced proportions
+scv.pl.proportions(adata)
+
+#Normalize, look into parameters
+scv.pp.filter_and_normalize(adata)
+scv.pp.moments(adata)
+
+# Velocity Tools
+# Mode stochastic, basic velocity
+scv.tl.velocity(adata, mode='stochastic')
+scv.tl.velocity_graph(adata)
+
+# Mode dynamical
+scv.tl.velocity(adata, mode='dynamical')
+
+$ mode deterministic
+scv.tl.velocity(adata, mode='deterministic')
+
+#The velocities are stored in adata.layers, just like the count matrices
+adata.layers
+
+#Velocity_graph, sparse matrix with cosine correlations 
+scv.tl.velocity_graph(adata)
+
+#Generating umaps: velocities can be projected and visualized in any embedding (e.g. UMAP) on single cell level, 
+as gridlines, or as streamlines:
+
+scv.pl.velocity_embedding(adata, basis='umap', add_margin=0.2)
+
+scv.pl.velocity_embedding_grid(adata, basis='umap',  add_margin=0.2)
+
+scv.pl.velocity_embedding_stream(adata, basis='umap', add_margin=0.2)
+
+#Plott specific genes
+scv.pl.velocity(adata,['..', '..'])
+scv.pl.velocity_graph(adata)
+
+#Identify top genes with high positive velocity
+scv.tl.rank_velocity_genes(adata, groupby =  min_corr=0.3)
+df = scv.get_df(adata.uns['rank_velocity_genes']['names'])
+df.head()
+Df
+
+#Velocity confidence and length
+#:ength: increased velocity score
+#Confidence: directionality 
+
+scv.tl.velocity_confidence(adata)
+Keys = 'velocity_length', 'velocity_confidence'
+scv.pl.scatter(adata, c = Keys, perc = [5, 95])
+
+#Pseudotime
+scv.tl.velocity_pseudotime(adata)
+scv.pl.scatter(adata, color = 'velocity_pseudotime')
+
+
+#Velocity dynamical model
+#Need to remove other velocity paramaters before incorporating the dynamical model
+scv.tl.recover_dynamics(adata, n_jobs = 20)
+scv.tl.velocity(adata, mode = 'dynamical')
+scv.tl.velocity_graph(adata)
+scv.pl.velocity_embedding_stream(adata, basis='umap')
+
+#Latent time
+scv.tl.latent_time(adata)
+scv.pl.scatter(adata, color = 'latent_time', size = 80)
+
+#Read file back in using Scanpy h5ad commands
+import scanpy
+adata = scanpy.read_h5ad("...h5ad")
+
+

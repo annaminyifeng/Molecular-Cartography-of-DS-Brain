@@ -1,0 +1,105 @@
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(shiny)
+library(crosstalk)
+library(plotly)
+library(DT)
+library(viridis)
+library(plotly)
+library(RColorBrewer)
+library(htmlwidgets)
+
+#Select genes that delineate anatomical regions
+gene <- c("HOPX", "TNC", "LIFR") 
+threshold <- 0 # the threshold used
+point_size <- 2.2
+w <- 1000
+h <- 500
+
+#Include n+1 colours based on the number of genes listed above 
+color_p_custom <- c("grey", "purple", "#00c4ff", "#51f44d") 
+
+#Load one object at a time
+seurat_object_path <- "../DS-1.rds"
+
+####################################
+slide.seq<-readRDS(seurat_object_path)
+
+#In my case, the images were called slice 1, adjust accordingly if that's not the case 
+slide_seq_matrix <- matrix(unlist(slide.seq@images[["slice1"]]@coordinates[,-3]), ncol = 2, byrow = FALSE)
+rownames(slide_seq_matrix) <- rownames(slide.seq@images[["slice1"]]@coordinates)
+colnames(slide_seq_matrix) <- colnames(slide.seq@images[["slice1"]]@coordinates[,-3])
+first_type <- slide.seq@meta.data[["first_type"]]
+
+temp_dataframe <- slide.seq@assays[["RNA"]]@counts[gene[1],]
+for (x in gene[2:length(gene)]) {
+  ex_value <- slide.seq@assays[["RNA"]]@counts[x,]
+  temp_dataframe <- rbind(temp_dataframe, ex_value)
+}
+
+row.names(temp_dataframe) <- gene
+
+gene_expression_value <- apply(temp_dataframe, 2, max, na.rm=TRUE)
+
+genes_to_display <- apply(temp_dataframe, 2, which.max)
+
+for (i in 1:length(gene_expression_value)) {
+  if (gene_expression_value[[i]] <= threshold) {
+    genes_to_display[[i]] <- "*"
+  } else if (gene_expression_value[[i]] > threshold) {
+    genes_to_display[[i]] <- gene[as.integer(genes_to_display[[i]])]
+  }
+}
+
+slide.seq_plot <- as.data.frame(cbind(slide_seq_matrix, gene_expression_value))
+slide.seq_plot <- cbind(slide.seq_plot, genes_to_display)
+slide.seq_plot <- slide.seq_plot[order(slide.seq_plot$gene_expression_value, decreasing = FALSE), ]
+
+shared_slide.seq_plot <- SharedData$new(slide.seq_plot)
+
+ui <- fluidPage(
+  tabsetPanel(tabPanel("Lasso Selection", 
+                       mainPanel(plotlyOutput("distPlot"))),
+              tabPanel("Selected Cells", 
+                       mainPanel(DTOutput("table"))))
+)
+
+#Define server logic required to draw a histogram
+server <- function(input, output) {
+  
+  output$distPlot <- renderPlotly({
+    toWebGL(plot_ly(shared_slide.seq_plot, x = ~x, y = ~y, color = ~genes_to_display, colors = color_p_custom, size = ~gene_expression_value, type = 'scatter', mode = 'markers', text = rownames(slide.seq_plot)) %>% 
+      highlight("plotly_selected", dynamic = FALSE) %>% add_trace(
+        x = ~x,
+        y = ~y,
+        marker = list(
+          size = point_size
+        )
+      )%>%layout(autosize = F, width = w, height = h) %>% config(modeBarButtonsToAdd = list('drawclosedpath', 
+                                                                                            'drawopenpath'))
+    )
+  })
+  
+  output$table <- renderDT({
+    datatable(shared_slide.seq_plot, style="bootstrap", class="compact", width="100%", extensions='Buttons',
+              options=list(dom='Bfrtip',buttons=c('copy','csv','excel')), )
+  }, server = FALSE)
+  
+  output$download <- downloadHandler(
+    filename = "lasso_selection.csv",
+    content = function(file) {
+      write.csv(shared_slide.seq_plot$data(withSelection = FALSE, withFilter = TRUE, withKey = FALSE), file)
+    }
+  )
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+
+#Click selected cells first, let it load, then go back to the lasso selection 
+#Zoom in as much as possible
+#Can check off the big cells (on the right hand side) to only include cells of smaller size for selection 
+#Use the open freeform tool to draw the region of interest (be as precise as possible), then use the lasso tool to draw over the selection 
+#Following, click back on the selected cells tab, and export the cell ids to a csv file 

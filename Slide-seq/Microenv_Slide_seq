@@ -1,0 +1,291 @@
+```{r}
+source("../Niche_Function.R")
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(reshape2)
+library(future)
+library(purrr)
+library(nlme)
+plan("multisession", workers = 8)
+```
+
+
+```{r}
+saveDir <-  ""
+input <- ""
+cell.group = "cellsubtype"  
+comparison.group = "Condition" #There must be two conditions in this column
+replicate.column = "Replicate"#Column that identifies replicate
+baseline_condition <- "CTL" #Indicate your baseline
+neighbors.k = 30 #Can change to what number you desire to use for microenv analysis
+num_niches = 6 #Check Seurat documentation for Niches
+skip_threshold_percentage <- 90  #You can adjust this percentage as needed. Currently, it means that if a query cell type is absent around a particular center cell type 10% of the time, that comparison will be skipped.
+```
+
+
+```{r}
+obj <- readRDS(input)
+all_conditions <- unique(obj[[comparison.group]])
+disease_condition <- all_conditions[all_conditions != baseline_condition]
+neighbor_df <- list()
+if (!dir.exists(saveDir)) {dir.create(saveDir, recursive = TRUE)}
+fovs <- names(obj@images)
+for(fov in fovs){
+  obj <- BuildNicheAssay(object = obj, fov = fov, group.by = cell.group, niches.k = num_niches, neighbors.k = 30)
+  DefaultAssay(obj) <- 'niche'
+  table <- as.data.frame(obj@assays$niche@counts)
+  table <- t(table)
+  neighbor_df[[fov]] <- table
+  print(paste0("Finished Processing: ", fov))
+}
+
+combined_df <- do.call(rbind, neighbor_df)
+combined_df <- as.data.frame(combined_df)
+celltype.vector <- colnames(combined_df)
+combined_df$cell_id <- rownames(combined_df)
+metadata_df <- obj@meta.data
+metadata_df$cell_id <- rownames(metadata_df)
+merged_df <- merge(combined_df, metadata_df, by = "cell_id")
+write.csv(merged_df, file = paste0(saveDir, "combined_df.csv"))
+
+data <- merged_df
+data$Sample <- data[[replicate.column]]
+data$celltype <- data[[cell.group]]
+data$celltype <- as.factor(gsub("_", "a", data$celltype))
+colnames(data) <- gsub("//.", "-", colnames(data))
+
+data$Condition <- factor(data$Condition, levels = c(baseline_condition, disease_condition))
+unique_cell_types <- unique(data$cellsubtype)
+
+results_df <- tibble(
+  CentroidCellType = character(),
+  QueryCellType = character(),
+  TestType = character(),
+  PValue_model = numeric(),
+  PValue_wilcox = numeric(),
+  MeanDifference = numeric(),
+  Condition1Median = numeric(),
+  Condition2Median = numeric()
+)
+
+for (centroid_cell_type in unique_cell_types) {
+  for (query_cell_type in unique_cell_types) {
+    if (!query_cell_type %in% names(data)) { next }
+
+    query_data <- data %>%
+        dplyr::filter(celltype == centroid_cell_type) %>%
+        dplyr::select(cell_id, Condition, Sample, all_of(query_cell_type)) %>%
+        drop_na()
+    #Skip if not enough data
+    if (nrow(query_data) < 2 || length(unique(query_data$Condition)) < 2) { next }
+    #Calculate the percentage of zero counts for the query cell type
+    zero_count_percentage <- sum(query_data[[query_cell_type]] == 0) / nrow(query_data) * 100
+    #Filtration step: skip if more than the threshold percentage of counts are zero
+    if (zero_count_percentage > skip_threshold_percentage) { next }
+    #Additional filtration: ensure there are at least two non-zero observations for each condition
+    condition_counts <- query_data %>% group_by(Condition) %>% 
+      summarise(non_zero_count = sum(.data[[query_cell_type]] > 0))
+    if (any(condition_counts$non_zero_count < 2)) { next }
+    #Additional check: ensure we have enough data to fit a mixed-effects model
+    if (length(unique(query_data$Sample)) < 2) { next }  #We need at least 2 groups for random effects
+    
+    
+    query_data_control <- query_data[query_data$Condition == baseline_condition,]
+    query_data_disease <- query_data[query_data$Condition == disease_condition,]
+    wilcox_result <- wilcox.test(query_data_control[[query_cell_type]], query_data_disease[[query_cell_type]])
+    p_value_wilcox <- wilcox_result$p.value
+    #Prepare and fit the full linear mixed-effects model using ML instead of REML
+    full_formula <- as.formula(paste(query_cell_type, "~ Condition", sep = ""))
+    full_model <- tryCatch({
+      lme(full_formula, random = ~1 | Sample, data = query_data, method = "ML")
+    }, error = function(e) return(NULL))
+    
+    #Fit the reduced model (without the Condition effect) using ML
+    reduced_formula <- as.formula(paste(query_cell_type, "~ 1", sep = ""))
+    reduced_model <- tryCatch({
+      lme(reduced_formula, random = ~1 | Sample, data = query_data, method = "ML")
+    }, error = function(e) return(NULL))
+    
+    #Only continue if both models were successfully fitted
+    if (is.null(full_model) || is.null(reduced_model)) { next }
+    
+    #Perform the likelihood ratio test
+    lrt_result <- anova(full_model, reduced_model)
+    p_value <- lrt_result$`p-value`[2] #Get the p-value for the condition effect
+    
+    condition1_median <- median(query_data %>% filter(Condition == levels(query_data$Condition)[1]) %>% pull(query_cell_type))
+    condition2_median <- median(query_data %>% filter(Condition == levels(query_data$Condition)[2]) %>% pull(query_cell_type))
+    median_diff <- condition1_median - condition2_median
+
+    #Extract fixed effects from the full model
+    fixed_effects <- fixef(full_model)
+
+    #Assuming the second fixed effect is the one of interest
+    condition_effect <- fixed_effects[2]
+
+    #Add results to the dataframe
+    results_df <- rbind(results_df, tibble(
+      CentroidCellType = centroid_cell_type,
+      QueryCellType = query_cell_type,
+      TestType = "Mixed-Effects Model",
+      PValue_model = p_value,
+      PValue_condition = p_value_wilcox,
+      MeanDifference = condition_effect,  #or median_diff if more appropriate
+      Condition1Median = condition1_median,
+      Condition2Median = condition2_median
+    ))
+  }
+}
+
+
+results_df$PValueAdjusted_BH <- p.adjust(results_df$PValue_condition, method = "BH")
+
+results_df <- results_df %>%
+  mutate(Comparison_Significance = case_when(PValueAdjusted_BH < 0.05 ~ "*", TRUE ~ ""))
+results_df <- results_df %>%
+  mutate(Model_Significance = case_when(PValue_model < 0.05 ~ "*", TRUE ~ ""))
+
+results_df <- results_df %>%
+  mutate(Significance = case_when(Comparison_Significance == "*" & Model_Significance == "*" ~ "*", TRUE ~ ""))
+
+write_csv(results_df, paste0(saveDir, "results_df.csv"))
+
+#Adjust scale as needed
+pdf("heatmap.pdf")
+ggplot(results_df, aes(x = QueryCellType, y = CentroidCellType, fill = MeanDifference)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = Significance), vjust = 0.8, color = "black", size = 6) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0, 
+                       limits = c(-15, 15), name = "Log2 Fold Change") +
+  theme_minimal() +
+  labs(title = paste0("MicroEnv Change in ", disease_condition , ' vs ', baseline_condition),
+       x = "Surrounding Cell Type", y = "Center Cell Type", fill = "Log2FC") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        text = element_text(face = "bold"),
+        legend.title.align = 0)
+dev.off()
+
+
+```
+
+##The following is for spatial plots##
+
+```{r}
+library(reticulate)
+#Point to the Python script location
+source_python("../Microenv_spatial_plot_helper.py")
+
+#Prepare dataset for analysis
+input <- "../Slide-seq.rds"
+output_dir <- "../Slide_seq"
+cell_annotation_column <- 'cellsubtype'
+comparison_column <- "Condition" #There must be two conditions in this column
+sample_column <- "Replicate" #Column that identifies replicate
+samples <- c("CTL1", "DS1") #Samples to plot, can be multiple sample per condition
+baseline_condition <- "CTL"
+
+#Define the cell types of interest
+center_cell <- ""
+query_cell <- ""
+num_neighbors <- 30
+
+```
+
+```{r}
+library(sf)
+library(dplyr)
+library(reticulate)
+library(Seurat)
+library(ggplot2)
+library(transport)
+library(gridExtra)
+library(patchwork)  
+
+#Function to generate individual plots for a given cell ID
+#Can use your colour code of interest 
+
+generate_plot <- function(cell_id, all_cell_data, num_neighbors, query_cell) {
+  sample <- all_cell_data %>%
+    filter(cell_ID == cell_id) %>%
+    pull(Sample)
+  cell_data <- all_cell_data[all_cell_data$Sample == sample,] 
+  data <- cell_data %>% dplyr::select(cell_ID, center_x, center_y ,cell_type, condition)
+  data_py <- r_to_py(data)
+  
+  #Retrieve neighbors
+  neighbors <- find_nearest_neighbors(data_py, cell_id, as.integer(num_neighbors))
+  
+  #Extract neighbor data from the main data frame
+  neighbor_data <- data[data$cell_ID %in% neighbors,]
+  neighbor_data$color <- ifelse(neighbor_data$cell_type == query_cell, "#ffcae5", "grey")
+  
+  #Add the center cell
+  center_cell_data <- data[data$cell_ID == cell_id,]
+  center_cell_data$color <- "#ef87a9"
+  
+  #Combine data for plotting
+  plot_data <- rbind(neighbor_data, center_cell_data)
+  
+  #Create a plot for this group
+  p <- ggplot(plot_data, aes(x = center_x, y = center_y, color = color)) +
+    geom_point(size = 1.5, show.legend = FALSE) +
+    scale_color_manual(values = c("#ef87a9" = "#ef87a9", "#ffcae5" = "#ffcae5", "grey" = "grey")) +
+    labs(title = paste("Cell ID:", cell_id), x = "Center X", y = "Center Y") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 5))
+  
+  return(p)
+}
+
+
+sobject <- readRDS(input)
+dir.create(output_dir, recursive = T)
+metadata <- sobject@meta.data
+remove(sobject)
+metadata$cell_type <- metadata[[cell_annotation_column]]
+metadata$condition <- metadata[[comparison_column]]
+metadata$Sample <- metadata[[sample_column]]
+all_cell_data <- metadata %>% dplyr::select(center_x, center_y, cell_type, Sample, condition)
+all_cell_data$cell_ID <- rownames(all_cell_data)
+
+sample_dfs <- list()
+
+
+for (sample in samples){
+cell_data <- all_cell_data[all_cell_data$Sample == sample,] 
+data <- cell_data %>% dplyr::select(cell_ID, center_x, center_y ,cell_type, condition)
+data_py <- r_to_py(data)
+neighbor_types_df <- find_all_neighbors_with_types(data_py, as.integer(num_neighbors))
+neighbor_types_df$cell_type <- data$cell_type
+neighbor_types_df$condition <- data$condition
+sample_dfs[[sample]] <- neighbor_types_df
+}
+
+aggregated_df <- bind_rows(sample_dfs)
+
+all_conditions <- unique(aggregated_df$condition)
+disease_condition <- all_conditions[all_conditions != baseline_condition]
+
+aggregated_df_control <- aggregated_df[aggregated_df$condition == baseline_condition, ]
+aggregated_df_disease <- aggregated_df[aggregated_df$condition == disease_condition, ]
+
+
+sub_neighbor_types_df_control <- aggregated_df_control[aggregated_df_control$cell_type == center_cell,]
+sub_neighbor_types_df_disease <- aggregated_df_disease[aggregated_df_disease$cell_type == center_cell,]
+sub_neighbor_types_df_control[[query_cell]] <- as.numeric(sub_neighbor_types_df_control[[query_cell]])
+sub_neighbor_types_df_disease[[query_cell]] <- as.numeric(sub_neighbor_types_df_disease[[query_cell]])
+sub_neighbor_types_df_control <- na.omit(sub_neighbor_types_df_control)  
+sub_neighbor_types_df_disease <- na.omit(sub_neighbor_types_df_disease)  
+sub_neighbor_types_df_control <- sub_neighbor_types_df_control[order(-sub_neighbor_types_df_control[[query_cell]]), ]
+sub_neighbor_types_df_disease <- sub_neighbor_types_df_disease[order(-sub_neighbor_types_df_disease[[query_cell]]), ]
+sub_neighbor_types_df_control$Rank <- seq_len(nrow(sub_neighbor_types_df_control))
+sub_neighbor_types_df_disease$Rank <- seq_len(nrow(sub_neighbor_types_df_disease))
+
+```
