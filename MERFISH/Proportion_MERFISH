@@ -1,0 +1,72 @@
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(writexl)
+library(readxl)
+library(ggpubr)
+library(rstatix)
+library(reshape2)
+Seurat_obj = readRDS(".rds")
+setwd("..")
+
+#Calculate proportions 
+levels(Seurat_obj@meta.data$Condition) = c("WT", "DS")
+x_proportion = table(Seurat_obj@meta.data$celltype, Seurat_obj@meta.data$orig.ident)
+sum_WT1 = sum(x_proportion[, "WT1"])
+sum_WT2 = sum(x_proportion[, "WT2"])
+sum_WT3 = sum(x_proportion[, "WT3"])
+sum_DS1 = sum(x_proportion[, "DS1"])
+sum_DS2 = sum(x_proportion[, "DS2"])
+sum_DS3 = sum(x_proportion[, "DS3"])
+WT1 = x_proportion[, "WT1"]/sum_WT1 * 100
+WT2 = x_proportion[, "WT2"]/sum_WT2 * 100
+WT3 = x_proportion[, "WT3"]/sum_WT3 * 100
+DS1 = x_proportion[, "DS1"]/sum_DS1 * 100
+DS2 = x_proportion[, "DS2"]/sum_DS2 * 100
+DS3 = x_proportion[, "DS3"]/sum_DS3 * 100
+y_proportion = cbind(WT1, WT2, WT3, DS1, DS2, DS3)
+y_proportion = melt(y_proportion)
+revalue(y_proportion$Var2, c("WT1" = "WT")) -> y_proportion$Var2
+revalue(y_proportion$Var2, c("WT2" = "WT")) -> y_proportion$Var2
+revalue(y_proportion$Var2, c("WT3" = "WT")) -> y_proportion$Var2
+revalue(y_proportion$Var2, c("DS1" = "DS")) -> y_proportion$Var2
+revalue(y_proportion$Var2, c("DS2" = "DS")) -> y_proportion$Var2
+revalue(y_proportion$Var2, c("DS3" = "DS")) -> y_proportion$Var2
+levels(y_proportion$Var1) = unique(y_proportion$Var1)
+levels(y_proportion$Var2) = unique(y_proportion$Var2)
+y_proportion$Var1 = as.character(y_proportion$Var1)
+y_proportion$Var2 = as.character(y_proportion$Var2)
+y_proportion = as.data.frame(y_proportion)
+Seurat_obj_Condition_Proportion <- y_proportion
+colnames(Seurat_obj_Condition_Proportion) = c("CellType", "Condition", "Proportion")
+
+#Statistical Test
+stat.test <- Seurat_obj_Condition_Proportion %>%
+ group_by(CellType) %>%
+ t_test(Proportion ~ Condition, var.equal=TRUE) %>%
+ adjust_pvalue(method = "bonferroni") %>%
+ add_significance("p.adj")
+stat.test = stat.test %>%
+ add_xy_position(fun = "mean_sd", x = "Cell Subtype", dodge = 0.6)
+
+Seurat_obj_Condition_Proportion$Condition <- factor(Seurat_obj_Condition_Proportion$Condition, levels = c("WT", "DS"))
+
+#Plotting
+pdf("Seurat_obj_proportion.pdf", width=6, height=4)
+ggplot(Seurat_obj_Condition_Proportion, aes(x=CellType, y=Proportion)) + 
+ geom_bar(position = position_dodge(0.8), stat = 'summary', 
+      fun.y = 'mean', width = 0.7, aes(fill = Condition,color = Condition), size=1.2, alpha=0.1) +
+ geom_errorbar(stat = 'summary', position = position_dodge(0.8),
+        aes(fill = Condition), size = 0.7, width = 0.2) +
+ geom_point(aes(x = CellType, fill = Condition), shape = 21,position = position_dodge(0.8),
+       size = 1.8, stroke=0.9) +
+ theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+    panel.background = element_blank(), axis.line = element_line(colour = "black")) +
+ scale_color_manual(values = c("..", "..")) +
+ scale_fill_manual(values = c("..", "..")) +
+ scale_y_continuous(breaks = seq(0,40, by=10), limits=c(0,40), expand = c(0,0)) +
+ labs(y = "Proportion of Cells", title = "Seurat_obj by Cell Subtype (Proportion)") +
+ theme(axis.title.x = element_blank(), axis.title.y = element_text(size = 10)) +
+ theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 9),
+    legend.key.width = unit(1.3, 'cm'))
+dev.off()

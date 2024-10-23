@@ -1,0 +1,115 @@
+#Perform CellChat from Seurat object separated based on condition, such as ctl and ds separately
+seurat_object<-readRDS("ctl.rds")
+
+seurat_object$samples<-seurat_object$Replicates
+
+data.input <- seurat_object[["RNA"]]@data 
+Idents(seurat_object)<-seurat_object$cellsubtype
+labels <- Idents(seurat_object)
+meta <- data.frame(labels = labels, row.names = names(labels)) 
+
+cellchat <- createCellChat(object = seurat_object, group.by = "ident", assay = "RNA")
+
+cellchat <- addMeta(cellchat, meta = meta)
+cellchat <- setIdent(cellchat, ident.use = "labels") 
+levels(cellchat@idents) 
+groupSize <- as.numeric(table(cellchat@idents)) 
+
+CellChatDB <- CellChatDB.human
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling", key = "annotation")
+cellchat@DB <- CellChatDB.use
+
+cellchat <- subsetData(cellchat) 
+future::plan("multisession", workers = 4) 
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+
+ptm = Sys.time()
+execution.time = Sys.time() - ptm
+print(as.numeric(execution.time, units = "secs"))
+
+cellchat <- computeCommunProb(cellchat, type = "triMean")
+
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+
+cellchat <- computeCommunProbPathway(cellchat)
+
+cellchat <- aggregateNet(cellchat)
+execution.time = Sys.time() - ptm
+print(as.numeric(execution.time, units = "secs"))
+
+saveRDS(cellchat, "cellchat_ctl.rds")
+
+groupSize <- as.numeric(table(cellchat@idents))
+pdf("circle_plot_CTL.pdf")
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(cellchat@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+dev.off()
+
+pdf("chord_pathways_CTL.pdf")
+par(mfrow=c(1,1))
+netVisual_aggregate(cellchat, signaling = pathways.show, layout = "chord")
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+dev.off()
+
+pdf("chord_interactions_CTL.pdf")
+netVisual_chord_cell(cellchat, signaling = pathways.show, group = group.cellType, title.name = paste0(pathways.show, "Signaling network")) 
+dev.off()
+
+#Perform comparison between the two conditions 
+cellchat.CTL <- readRDS("...")
+cellchat.DS <- readRDS("...")
+object.list <- list(CTL = cellchat.CTL, DS = cellchat.DS)
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+
+cellchat
+
+execution.time = Sys.time() - ptm
+print(as.numeric(execution.time, units = "secs"))
+
+ptm = Sys.time()
+gg1 <- compareInteractions(cellchat, show.legend = F, group = c(1,2))
+gg2 <- compareInteractions(cellchat, show.legend = F, group = c(1,2), measure = "weight")
+gg1 + gg2
+
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_diffInteraction(cellchat, weight.scale = T)
+netVisual_diffInteraction(cellchat, weight.scale = T, measure = "weight")
+
+gg1 <- netVisual_heatmap(cellchat)
+gg2 <- netVisual_heatmap(cellchat, measure = "weight")
+gg1 + gg2
+
+weight.max <- getMaxWeight(object.list, attribute = c("idents","count"))
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Number of interactions - ", names(object.list)[i]))
+}
+
+ptm = Sys.time()
+
+cellchat <- computeNetSimilarityPairwise(cellchat, type = "functional")
+cellchat <- netEmbedding(cellchat, type = "functional")
+cellchat <- netClustering(cellchat, type = "functional")
+netVisual_embeddingPairwise(cellchat, type = "functional", label.size = 3.5)
+
+cellchat <- computeNetSimilarityPairwise(cellchat, type = "structural")
+cellchat <- netEmbedding(cellchat, type = "structural")
+cellchat <- netClustering(cellchat, type = "structural")
+netVisual_embeddingPairwise(cellchat, type = "structural", label.size = 3.5)
+netVisual_embeddingPairwiseZoomIn(cellchat, type = "structural", nCol = 2)
+
+pairLR.use.up = net.up[, "interaction_name", drop = F]
+gg1 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.up, comparison = c(1, 2),  angle.x = 90, remove.isolate = T,title.name = paste0("Up-regulated signaling in ", names(object.list)[2]))
+
+pairLR.use.down = net.down[, "interaction_name", drop = F]
+gg2 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.down, comparison = c(1, 2),  angle.x = 90, remove.isolate = T,title.name = paste0("Down-regulated signaling in ", names(object.list)[2]))
+
+gg1 + gg2
+
+# Chord diagram
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_chord_gene(object.list[[2]], slot.name = 'net', net = net.up, lab.cex = 0.8, small.gap = 3.5, title.name = paste0("Up-regulated signaling in ", names(object.list)[2]))
+netVisual_chord_gene(object.list[[1]], slot.name = 'net', net = net.down, lab.cex = 0.8, small.gap = 3.5, title.name = paste0("Down-regulated signaling in ", names(object.list)[2]))
+
+saveRDS(cellchat, "cellchat_combined.rds")

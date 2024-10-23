@@ -1,0 +1,147 @@
+
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(patchwork)
+library(methods)
+library(Matrix)
+library(DT)
+library(MAST)
+library(tidyverse)
+library(ggrepel)
+
+run_mast <- function(input_file, output_dir, assay = 'RNA') {
+  combined <- readRDS(input_file)
+  DefaultAssay(object = combined) <- assay
+  combined <- FindVariableFeatures(combined)
+  combined$celltype<-combined$cellsubtype
+  cell_types <- unique(combined@meta.data$celltype)
+  combined$group_celltype <- paste(combined$condition, combined$celltype, sep = "_")
+  des <- list()
+  Idents(combined) <- combined$group_celltype
+  
+  #Function to generate condition names
+  generate_condition_names <- function(condition_prefix, celltype) {
+    paste0(condition_prefix, "_", celltype)
+  }
+  
+  #Extract unique condition prefixes
+  condition_prefixes <- unique(combined$condition)
+  
+  for (celltype in cell_types) {
+    try({
+      des[[celltype]] <- list()
+      #Dynamically generate condition names
+      condition_names <- sapply(condition_prefixes, generate_condition_names, celltype)
+      comparisons <- list(DS_CTL = condition_names)
+      
+      for (comparison in comparisons) {
+        name <- paste(comparison, collapse = "_vs_")
+        if (all(c(comparison[1], comparison[2]) %in% combined$group_celltype)) {
+          mast <- FindMarkers(combined, ident.1 = comparison[1], ident.2 = comparison[2], slot = "data",
+                              verbose = TRUE, test.use = "MAST", pseudocount.use = 1, logfc.threshold = 0.00,
+                              min.pct = 0.05)
+          des[[celltype]][[name]] <- mast
+        }
+      }
+    }, silent = FALSE)
+    
+    if(inherits(try(des[[celltype]], silent = TRUE), "try-error")) {
+      message("An error occurred while processing celltype: ", celltype)
+    }
+  }
+  
+  annotated_dat <- list()
+  
+  for(celltype in cell_types){
+    try({
+      dat <- des[[celltype]]
+      comparison <- sprintf("%s_%s_vs_%s_%s", condition_prefixes[1], celltype, condition_prefixes[2], celltype)
+      comp <- dat[[comparison]]
+      comp$comparison <- gsub(paste0("_", celltype), "", comparison)
+      comp$gene <- rownames(comp)
+      comp$FDR <- p.adjust(comp$p_val, method = "fdr")
+      comp$sig <- ifelse(comp$FDR < 0.05 & abs(comp$avg_log2FC) > 0.25, TRUE, FALSE)
+      comp$celltype <- celltype
+      subclasses <- unlist(strsplit(x = comparison, split = "_vs_"))
+      expression <- data.frame()
+      
+      for(subclass in subclasses) {
+        cells <- subset(combined, idents = subclass)
+        avg_expr <- as.data.frame(AverageExpression(cells, verbose = FALSE)$RNA)
+        avg_expr$subclass <- subclass
+        avg_expr$gene <- rownames(avg_expr)
+        expression <- rbind(expression, avg_expr)
+      }
+      
+      expression <- expression %>% 
+        spread(key = subclass, value = all)
+      
+      names(expression)[which(names(expression) == subclasses[1])] <- "exp.1"
+      names(expression)[which(names(expression) == subclasses[2])] <- "exp.2"
+      
+      expression$log2FC <- log2(expression$exp.1 / expression$exp.2)
+      comp <- left_join(comp, expression, by = "gene")
+      annotated_dat[[comparison]] <- comp
+    }, silent = FALSE)
+    
+    if(inherits(try(annotated_dat[[celltype]], silent = TRUE), "try-error")) {
+      message("An error occurred while processing annotated data for celltype: ", celltype)
+    }
+  }
+  
+  #Ensure the output directory exists
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir)
+  }
+  
+  #Iterate through each dataframe in annotated_dat list
+  for (comparison in names(annotated_dat)) {
+    df <- annotated_dat[[comparison]]
+    safe_comparison_name <- gsub("[/\\?%*:|\"<>]", "_", comparison)
+    
+    df <- df[!grepl("^MT-", df$gene), ]
+    
+    #Write dataframe to CSV
+    write.csv(df, file.path(output_dir, paste0(safe_comparison_name, ".csv")), row.names = FALSE)
+    
+    #Generate volcano plot
+    df$gene_label <- rownames(df)
+    df$group <- with(df, ifelse(avg_log2FC > 0.25 & sig == TRUE, "up_sig", 
+                                ifelse(avg_log2FC > 0.25 & sig == FALSE, "up_non_sig",
+                                       ifelse(avg_log2FC <= 0.25 & sig == TRUE, "down_sig", "down_non_sig"))))
+    
+    volcano <- ggplot(df, aes(x=avg_log2FC, y=-log10(FDR), color=group)) +
+      geom_point() +
+      geom_text_repel(data = subset(df, group %in% c("up_sig", "down_sig")), 
+                      aes(label=gene), color="black") +
+      theme_minimal() +
+      theme(panel.grid.major = element_blank(), 
+            panel.grid.minor = element_blank(),
+            axis.line = element_line(color = "black")) +
+      ggtitle(comparison) +
+      ylab("-log10(padj)") +
+      xlab("log2 Fold Change") +
+      scale_color_manual(values=c("up_sig"="#1F968BFF", "down_sig"="#440154FF", "up_non_sig"="gray", "down_non_sig"="gray")) +
+      geom_hline(yintercept = -log10(0.05), alpha=0.5, linetype="dashed", color="gray") +
+      geom_vline(xintercept = -0.25, alpha = 0.5, linetype = "dashed", color = "gray") +
+      geom_vline(xintercept = 0.25, alpha = 0.5, linetype = "dashed", color = "gray")
+    
+    #Save volcano plot as PDF
+    ggsave(file.path(output_dir, paste0(safe_comparison_name, "_volcano.pdf")), volcano)
+  }
+}
+
+
+
+##########################
+input_file <-"../prenatal_final.rds"
+output_dir = ".."
+
+run_mast(input_file, 
+         output_dir,
+         assay = 'RNA')
+##########################
+
+
+

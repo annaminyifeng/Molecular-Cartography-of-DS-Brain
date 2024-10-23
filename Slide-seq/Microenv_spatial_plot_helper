@@ -1,0 +1,139 @@
+import pandas as pd
+from scipy.spatial import distance
+
+def find_nearest_neighbors(data, cell_id, num_neighbors):
+    # Ensure the cell_id and num_neighbors are valid
+    if cell_id not in data['cell_ID'].values:
+        return f"Cell ID {cell_id} not found in data."
+    if num_neighbors <= 0:
+        return "Number of neighbors must be greater than 0."
+
+    # Convert num_neighbors to an integer explicitly
+    num_neighbors = int(num_neighbors)
+    
+    # Find the reference cell's coordinates
+    ref_cell = data[data['cell_ID'] == cell_id]
+    ref_coords = ref_cell[['center_x', 'center_y']].values[0]
+    
+    # Compute distances from the reference cell to all other cells
+    other_cells = data[data['cell_ID'] != cell_id].copy()  # Use .copy() to avoid SettingWithCopyWarning
+    other_cells['distance'] = other_cells.apply(lambda row: distance.euclidean(ref_coords, (row['center_x'], row['center_y'])), axis=1)
+    
+    # Find the nearest neighbors
+    nearest_neighbors = other_cells.nsmallest(num_neighbors, 'distance')
+    
+    return nearest_neighbors['cell_ID'].tolist()
+
+
+import pandas as pd
+from scipy.spatial import distance
+
+def find_all_neighbors(data, num_neighbors):
+    results = []
+
+    for index, row in data.iterrows():
+        cell_id = row['cell_ID']
+        ref_coords = (row['center_x'], row['center_y'])
+        
+        # Calculate distances to all other cells
+        data['distance'] = data.apply(lambda x: distance.euclidean(ref_coords, (x['center_x'], x['center_y'])), axis=1)
+        
+        # Sort and select the nearest neighbors, excluding the current cell
+        nearest_neighbors = data[data['cell_ID'] != cell_id].nsmallest(num_neighbors, 'distance')
+        
+        # Append the results
+        results.append([cell_id] + nearest_neighbors['cell_ID'].tolist())
+
+    # Create DataFrame from results
+    neighbor_df = pd.DataFrame(results, columns=['cell_ID'] + [f'Neighbor_{i+1}' for i in range(num_neighbors)])
+    
+    return neighbor_df
+
+import pandas as pd
+from scipy.spatial import distance
+from tqdm import tqdm
+
+def find_all_neighbors(data, num_neighbors):
+    results = []
+    
+    # Wrap the iteration with tqdm for a progress bar
+    for index, row in tqdm(data.iterrows(), total=data.shape[0], desc="Processing cells"):
+        cell_id = row['cell_ID']
+        ref_coords = (row['center_x'], row['center_y'])
+        
+        # Calculate distances to all other cells
+        data['distance'] = data.apply(lambda x: distance.euclidean(ref_coords, (x['center_x'], x['center_y'])), axis=1)
+        
+        # Sort and select the nearest neighbors, excluding the current cell
+        nearest_neighbors = data[data['cell_ID'] != cell_id].nsmallest(num_neighbors, 'distance')
+        
+        # Append the results
+        results.append([cell_id] + nearest_neighbors['cell_ID'].tolist())
+
+    # Create DataFrame from results
+    neighbor_df = pd.DataFrame(results, columns=['cell_ID'] + [f'Neighbor_{i+1}' for i in range(num_neighbors)])
+    
+    return neighbor_df
+
+
+import pandas as pd
+from scipy.spatial import cKDTree
+from tqdm import tqdm
+
+def find_all_neighbors(data, num_neighbors):
+    # Extract coordinates and build a k-d tree
+    coordinates = data[['center_x', 'center_y']].values
+    tree = cKDTree(coordinates)
+
+    results = []
+    
+    # Query the tree for the nearest neighbors
+    for index, row in tqdm(data.iterrows(), total=data.shape[0], desc="Processing cells"):
+        cell_id = row['cell_ID']
+        # Query the k-d tree for the nearest num_neighbors + 1 neighbors (includes the point itself)
+        distances, indices = tree.query([row['center_x'], row['center_y']], k=num_neighbors + 1)
+        
+        # Exclude the point itself and get neighbor IDs
+        neighbor_ids = data.iloc[indices[1:]]['cell_ID'].values  # indices[0] is the point itself
+        
+        # Append the results
+        results.append([cell_id] + list(neighbor_ids))
+
+    # Create DataFrame from results
+    neighbor_df = pd.DataFrame(results, columns=['cell_ID'] + [f'Neighbor_{i+1}' for i in range(num_neighbors)])
+    
+    return neighbor_df
+
+
+import pandas as pd
+from scipy.spatial import cKDTree
+from tqdm import tqdm
+
+def find_all_neighbors_with_types(data, num_neighbors):
+    # Extract coordinates and build a k-d tree
+    coordinates = data[['center_x', 'center_y']].values
+    tree = cKDTree(coordinates)
+
+    # Prepare DataFrame to store results
+    unique_cell_types = data['cell_type'].unique()
+    columns = ['cell_ID'] + list(unique_cell_types)
+    results_df = pd.DataFrame(columns=columns)
+    
+    # Process each cell
+    for index, row in tqdm(data.iterrows(), total=data.shape[0], desc="Processing cells"):
+        cell_id = row['cell_ID']
+        # Query the k-d tree for the nearest num_neighbors + 1 neighbors (includes the point itself)
+        distances, indices = tree.query([row['center_x'], row['center_y']], k=num_neighbors + 1)
+        
+        # Get neighbor indices, excluding the point itself
+        neighbor_ids = indices[1:]  # Exclude the point itself
+        neighbor_cell_types = data.iloc[neighbor_ids]['cell_type']
+        
+        # Count occurrences of each cell type
+        type_counts = neighbor_cell_types.value_counts().reindex(unique_cell_types, fill_value=0)
+        
+        # Append the results
+        result_row = pd.DataFrame([[cell_id] + type_counts.tolist()], columns=columns)
+        results_df = pd.concat([results_df, result_row], ignore_index=True)
+
+    return results_df

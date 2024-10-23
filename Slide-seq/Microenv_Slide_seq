@@ -22,7 +22,7 @@ cell.group = "cellsubtype"
 comparison.group = "Condition" #There must be two conditions in this column
 replicate.column = "Replicate"#Column that identifies replicate
 baseline_condition <- "CTL" #Indicate your baseline
-neighbors.k = 30 #Can change to what number you desire to use for microenv analysis
+neighbors.k = 100 #Can change to what number you desire to use for microenv analysis
 num_niches = 6 #Check Seurat documentation for Niches
 skip_threshold_percentage <- 90  #You can adjust this percentage as needed. Currently, it means that if a query cell type is absent around a particular center cell type 10% of the time, that comparison will be skipped.
 ```
@@ -194,7 +194,7 @@ baseline_condition <- "CTL"
 #Define the cell types of interest
 center_cell <- ""
 query_cell <- ""
-num_neighbors <- 30
+num_neighbors <- 100
 
 ```
 

@@ -1,0 +1,20 @@
+name: scv
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - cython
+  - numba
+  - matplotlib
+  - scikit-learn
+  - h5py
+  - click
+  - samtools
+  - pip
+  - pip:
+    - pysam
+    - velocyto
+    - scvelo

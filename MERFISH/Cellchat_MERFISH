@@ -1,0 +1,218 @@
+library(dplyr)
+library(CellChat)
+library(Seurat)
+
+setwd("..")
+combined<-readRDS("...rds")
+
+#Subset integrated Seurat object into individual replicates
+WT1 <- subset(combined, orig.ident == "WT1")
+saveRDS(WT1, "..WT1.rds")
+WT2 <- subset(combined, orig.ident == "WT2")
+saveRDS(WT2, "..WT2.rds")
+WT3 <- subset(combined, orig.ident == "WT3")
+saveRDS(WT3, "..WT3.rds")
+DS1 <- subset(combined, orig.ident == "DS1")
+saveRDS(DS1, "..DS1.rds")
+DS2 <- subset(combined, orig.ident == "DS2")
+saveRDS(DS2, "..DS2.rds")
+DS3 <- subset(combined, orig.ident == "DS3")
+saveRDS(DS3, "..DS3.rds")
+
+seu1<-readRDS("..WT1.rds")
+seu2<-readRDS("..WT2.rds")
+seu3<-readRDS("..WT3.rds")
+
+#Perform the following code for WT, then DS separately
+#Set identity to cell types
+Idents(seu1) <- seu1$cellsubtype
+Idents(seu2) <- seu2$cellsubtype
+Idents(seu3) <- seu3$cellsubtype
+
+seu1$samples<-"WT1"
+seu2$samples<-"WT2"
+seu3$samples<-"WT3"
+
+data.input1 = Seurat::GetAssayData(seu1, slot = "data", assay = "Vizgen") 
+data.input2 = Seurat::GetAssayData(seu2, slot = "data", assay = "Vizgen") 
+data.input3 = Seurat::GetAssayData(seu3, slot = "data", assay = "Vizgen") 
+
+#Check for negative values in the assay
+has_negative_values <- any(data.input1 < 0)
+print(has_negative_values)
+has_negative_values <- any(data.input2 < 0)
+print(has_negative_values)
+has_negative_values <- any(data.input3 < 0)
+print(has_negative_values)
+
+genes.common <- Reduce(intersect, list(rownames(data.input1), rownames(data.input2), rownames(data.input3)))
+print(genes.common)
+
+data.input <- cbind(data.input1[genes.common, ], data.input2[genes.common, ], data.input3[genes.common, ])
+
+meta1 = data.frame(labels = Idents(seu1), samples = "WT1") #manually create a dataframe consisting of the cell labels
+meta2 = data.frame(labels = Idents(seu2), samples = "WT2") 
+meta3 = data.frame(labels = Idents(seu3), samples = "WT3") 
+
+meta <- rbind(meta1, meta2, meta3)
+rownames(meta) <- colnames(data.input)
+
+meta$labels <- factor(meta$labels, levels = levels(Idents(seu1)))
+meta$samples <- factor(meta$samples, levels = c("WT1", "WT2", "WT3"))
+unique(meta$labels)
+unique(meta$samples) 
+
+#Load spatial transcriptomics information
+spatial.locs1 = Seurat::GetTissueCoordinates(seu1, scale = NULL, cols = c("x", "y")) 
+spatial.locs2 = Seurat::GetTissueCoordinates(seu2, scale = NULL, cols = c("x", "y")) 
+spatial.locs3 = Seurat::GetTissueCoordinates(seu3, scale = NULL, cols = c("x", "y")) 
+spatial.locs1 = spatial.locs1[, c("x", "y")]
+spatial.locs2 = spatial.locs2[, c("x", "y")]
+spatial.locs3 = spatial.locs3[, c("x", "y")]
+spatial.locs <- rbind(spatial.locs1, spatial.locs2, spatial.locs3)
+rownames(spatial.locs) <- colnames(data.input)
+
+#Scale factors of spatial coordinates
+conversion.factor = 1
+spot.size = 10 #use the typical human cell size
+spatial.factors1 = data.frame(ratio = conversion.factor, tol = spot.size/2)
+spatial.factors2 = data.frame(ratio = conversion.factor, tol = spot.size/2)
+spatial.factors3 = data.frame(ratio = conversion.factor, tol = spot.size/2)
+
+
+spatial.factors <- rbind(spatial.factors1, spatial.factors2, spatial.factors3)
+rownames(spatial.factors) <- c("WT1", "WT2", "WT3")
+
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "labels",
+                  datatype = "spatial", coordinates = spatial.locs, spatial.factors = spatial.factors)
+
+CellChatDB <- CellChatDB.mouse #use CellChatDB.human if running on human data
+
+#use a subset of CellChatDB for cell-cell communication analysis
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling", key = "annotation") #use Secreted Signaling
+#set the used database in the object
+cellchat@DB <- CellChatDB.use
+
+#Subset the expression data of signaling genes for saving computation cost
+cellchat <- subsetData(cellchat) #This step is necessary even if using the whole database
+future::plan("multisession", workers = 4) 
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+
+ptm = Sys.time()
+execution.time = Sys.time() - ptm
+print(as.numeric(execution.time, units = "secs"))
+
+ptm = Sys.time()
+cellchat <- computeCommunProb(cellchat, type = "truncatedMean", trim = 0.1, 
+                       distance.use = FALSE, interaction.range = 250, scale.distance = NULL,
+                              contact.dependent = TRUE, contact.range = 100)
+
+cellchat <- computeCommunProbPathway(cellchat)
+
+cellchat <- aggregateNet(cellchat)
+
+execution.time = Sys.time() - ptm
+print(as.numeric(execution.time, units = "secs"))
+
+ptm = Sys.time()
+
+groupSize <- as.numeric(table(cellchat@idents))
+
+pdf("interactions_ctl.pdf")
+netVisual_circle(cellchat@net$count,  vertex.weight = rowSums(cellchat@net$count), weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(cellchat@net$weight, vertex.weight = rowSums(cellchat@net$weight), weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+dev.off()
+
+pdf("heatmap_ctl.pdf")
+netVisual_heatmap(cellchat, measure = "count", color.heatmap = "Blues")
+dev.off()
+
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP") #the slot 'netP' means the inferred intercellular communication network of signaling pathways
+
+pdf("pathway_contribution_CTL.pdf")
+netAnalysis_contribution(cellchat, signaling = pathways.show)
+dev.off()
+
+saveRDS(cellchat, "cellchat_CTL.rds")
+```
+
+```{r}
+#Perform comparison between the two conditions 
+
+setwd("../")
+
+cellchat.ctl <- readRDS("../cellchat_WT.rds")
+cellchat.ds <- readRDS("../cellchat_DS.rds")
+
+object.list <- list(ctl = cellchat.ctl, ds = cellchat.ds)
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+
+execution.time = Sys.time() - ptm
+print(as.numeric(execution.time, units = "secs"))
+
+save(object.list, file = "cellchat_object.RData")
+save(cellchat, file = "cellchat_merged.RData")
+saveRDS(cellchat, "cellchat_merged.rds")
+
+ptm = Sys.time()
+pdf("compare_interactions.pdf")
+gg1 <- compareInteractions(cellchat, show.legend = F, group = c(1,2))
+gg2 <- compareInteractions(cellchat, show.legend = F, group = c(1,2), measure = "weight")
+gg1 + gg2
+dev.off()
+
+
+par(mfrow = c(1,2), xpd=TRUE)
+pdf("circle.pdf")
+netVisual_diffInteraction(cellchat, weight.scale = T)
+netVisual_diffInteraction(cellchat, weight.scale = T, measure = "weight")
+dev.off()
+
+pdf("heatmap.pdf", width=15)
+gg1 <- netVisual_heatmap(cellchat, color.heatmap = c("#440154FF", "#1F968BFF"))
+#> Do heatmap based on a merged object
+gg2 <- netVisual_heatmap(cellchat, color.heatmap = c("#440154FF", "#1F968BFF"), measure = "weight")
+#> Do heatmap based on a merged object
+gg1 + gg2
+dev.off()
+
+pdf("circle_per_condition.pdf", width=15)
+weight.max <- getMaxWeight(object.list, attribute = c("idents","count"))
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+ netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Number of interactions - ", names(object.list)[i]))
+}
+dev.off()
+
+#Define a positive dataset, i.e., the dataset with positive fold change against the other dataset
+pos.dataset = "ds"
+#Define a char name used for storing the results of differential expression analysis
+features.name = paste0(pos.dataset, ".merged")
+
+cellchat <- identifyOverExpressedGenes(cellchat, group.dataset = "datasets", pos.dataset = pos.dataset, features.name = features.name, only.pos = FALSE, thresh.pc = 0.1, thresh.fc = 0.05,thresh.p = 0.05, group.DE.combined = FALSE) 
+
+#map the results of differential expression analysis onto the inferred cell-cell communications to easily manage/subset the ligand-receptor pairs of interest
+net <- netMappingDEG(cellchat, features.name = features.name, variable.all = TRUE)
+#extract the ligand-receptor pairs with upregulated ligands in DS
+net.up <- subsetCommunication(cellchat, net = net, datasets = "ds",ligand.logFC = 0.05, receptor.logFC = NULL)
+#extract the ligand-receptor pairs with upregulated ligands and upregulated receptors in NL, i.e.,downregulated in DS
+net.down <- subsetCommunication(cellchat, net = net, datasets = "ctl",ligand.logFC = -0.05, receptor.logFC = NULL)
+
+gene.up <- extractGeneSubsetFromPair(net.up, cellchat)
+gene.down <- extractGeneSubsetFromPair(net.down, cellchat)
+
+write.csv(net.up, "net_up.csv")
+write.csv(net.down, "net_down.csv")
+
+#Chord diagram
+pdf("chord.pdf", width=20)
+par(mfrow = c(1, 2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+ netVisual_chord_gene(object.list[[i]], slot.name = "net", title.name = paste0("Signaling pathways", names(object.list)[i]), legend.pos.x = 10)
+}
+dev.off()
+
+
+```
+
