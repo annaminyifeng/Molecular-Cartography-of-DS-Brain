@@ -1,4 +1,4 @@
-Relevant codes for "Molecular Cartography of the Human and Mouse Down Syndrome Brain".
+This GitHub page includes all relevant codes for data analysis in the associated publication "Molecular Cartography of the Human and Mouse Down Syndrome Brain".
 
 **Abstract**
 
