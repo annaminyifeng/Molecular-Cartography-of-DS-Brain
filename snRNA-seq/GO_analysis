@@ -1,0 +1,81 @@
+setwd(..)
+library(ggplot2)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(GSEABase) # BiocManager::install('GSEABase')
+library(enrichplot)
+library(readxl)
+library(writexl)
+library(forcats)
+library(ggstance) #devtools::install_github("lionel-/ggstance")
+library(msigdbr)
+library(here)
+
+# A data frame of the available species
+msigdbr_species() 
+
+# A data frame of the available collections
+msigdbr_collections() 
+
+#Change for species and database of interest
+gene_sets <- msigdbr(species = "Homo sapiens", category = "C5", subcategory = "GO:BP") 
+term <- gene_sets$gs_name
+gene <- gene_sets$gene_symbol
+geneset <- as.data.frame(cbind(term,gene)) 
+
+#for all cell types
+cellgroups <- c('..')
+
+# Maken an empty list to store GSEA results
+GSEA<-list() 
+
+# Perform GSEA
+for (celltype in cellgroups) {
+  message('Conducting GSEA for:', celltype)
+  filename <- paste0('..csv') 
+  # Load the MAST DGE results
+  deg <- as.data.frame(read.csv(filename)) 
+  geneList = deg$avg_log2FC 
+  names(geneList) = deg$gene 
+  geneList=sort(geneList,decreasing = T) 
+  GSEA[[celltype]] <- GSEA(geneList, TERM2GENE=geneset, 
+                           minGSSize = 5,
+                           pvalueCutoff = 0.10,
+                           verbose=FALSE,
+                           eps = 0)
+}
+
+dir.create(..)
+
+setwd(..)
+
+# Save the GSEA results for the cell types of interest
+gsea_results_df <- GSEA[['..']]@result 
+gsea_results_df$ID <- NULL 
+
+write.csv(gsea_results_df, "..csv")
+
+# Create Barplot for cell type of interest
+x <- gsea_results_df
+y <- x %>%
+  mutate(ordering = abs(NES)) %>%
+  arrange(desc(ordering)) 
+
+# Plot top n number of pathways 
+n <- 10
+y_bar <- y %>%
+  group_by(sign(NES)) %>%
+  slice_max(order_by = ordering, n = n)
+
+# Name the file
+pdf_filename <- paste0("GSEA_", '..', ".pdf")
+pdf(pdf_filename, width = 10, height = 6)
+
+# Generate Barplot, can change colours for upregulated and downregulated genes
+ggplot(y_bar, aes(x = NES, y = fct_reorder(Description, NES), fill = p.adjust)) + 
+  geom_bar(stat = 'identity', orientation = 'y') +  # Specify orientation for clarity
+  scale_fill_continuous(low = '#440154FF', high = '#1F968BFF', guide = guide_colorbar(reverse = TRUE)) + 
+  theme_minimal() + 
+  labs(y = NULL)
+
+dev.off()
