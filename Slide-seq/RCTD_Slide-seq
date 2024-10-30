@@ -1,0 +1,162 @@
+# Load packages
+library(spacexr)
+library(Matrix)
+library(doParallel)
+library(ggplot2)
+
+setwd("..")
+
+# Read in individual Slide-seq files from Curio Seeker output
+sample<-readRDS("..")
+counts <- sample[["RNA"]]$counts
+
+# Read in the gene expression matrix and the bead coordinate matrix 
+coords <- read.csv("../MatchedBeadLocation.csv") 
+
+coords[1:5,1:2]
+# Move barcodes to rownames
+rownames(coords) <- coords$X; coords$X <- NULL 
+coords[1:5,1:2]
+dim(coords)
+
+nUMI <- colSums(counts) 
+
+# Create SpatialRNA object
+puck <- SpatialRNA(coords, counts, nUMI)
+
+## Examine SpatialRNA object (optional)
+print(dim(puck@counts))
+pdf("histogram.pdf")
+hist(log(puck@nUMI,2))
+dev.off()
+print(head(puck@coords)) 
+barcodes <- colnames(puck@counts) 
+
+saveRDS(puck, 'Puck.rds')
+
+# Load in Slide-seq sample one by one
+SAMPLEID= ".."
+
+# Load in reference single-cell or single-nucleus dataset
+reference_data <- readRDS("..")
+expression_matrix <- reference_data@assays$RNA@counts
+gene_names <- expression_matrix@Dimnames[1]
+samples_names <- expression_matrix@Dimnames[2]
+
+# Extract column for cell type transfer, in my case it was called cellsubtype
+celltypes_ref <- as.data.frame(reference_data$cellsubtype)
+colnames(celltypes_ref) <- c("celltype")
+set.seed(42)
+use_samples  <- intersect(rownames(celltypes_ref),samples_names[[1]])
+genes_from_curio <- read.csv("..")
+colnames(genes_from_curio) <- c("genes")
+used_genes  <- base::intersect(genes_from_curio$genes, gene_names[[1]])
+used_gene_index <- sort(match(used_genes, gene_names[[1]]))
+count_gene_processed_sample_processed <- expression_matrix[used_gene_index,]
+cell_types <- celltypes_ref[use_samples, ]
+cell_types <- as.factor(cell_types) 
+names(cell_types) <- use_samples
+reference <- Reference(count_gene_processed_sample_processed, cell_types, require_int = "TRUE", n_max_cells = 500000)
+
+# Run RCTD, I used to doublet mode
+myRCTD <- create.RCTD(puck, reference, max_cores = 8)
+myRCTD <- run.RCTD(myRCTD, doublet_mode = 'doublet')
+slide.seq <- AddMetaData(slide.seq, metadata = RCTD@results$results_df)
+saveRDS(myRCTD, 'myRCTD.rds')
+saveRDS(slide.seq, 'myRCTD_seurat.rds')
+
+# Subset RCTD object based on barcodes selected from the CellSelector Tool
+
+CS_barcodes<-read.csv("..")
+st_spot_id <- CS_barcodes[,1]
+rctd_obj <- myRCTD
+
+subset_rctd = function(rctd_obj, st_spot_id){
+    # 1. Report current number of spots.
+    spot_ids_rctd = rownames(rctd_obj@results$weights)
+    message(paste0('Current spatial spot count before subset: ', length(spot_ids_rctd)))
+    
+    # 2. Subset input st_spot_id to only those that are in rctd_obj
+    st_spot_id = intersect(st_spot_id, spot_ids_rctd)
+    
+    # Throw an error if the subset of spot ids is empty.
+    if(length(st_spot_id) == 0){
+        stop('No spot to keep. Please check input st_spot_id. This should be same as the spot barcodes in spatial object used to generate the RCTD/spacexr object.')
+    }
+
+    # A. subset @spatialRNA slot
+    rctd_obj@spatialRNA@coords = rctd_obj@spatialRNA@coords[st_spot_id, ]
+    rctd_obj@spatialRNA@counts = rctd_obj@spatialRNA@counts[, st_spot_id]
+    rctd_obj@spatialRNA@nUMI   = rctd_obj@spatialRNA@nUMI[st_spot_id]
+
+    # B. subset @originalSpatial slot
+    rctd_obj@originalSpatialRNA@coords = rctd_obj@originalSpatialRNA@coords[st_spot_id, ]
+    rctd_obj@originalSpatialRNA@counts = rctd_obj@originalSpatialRNA@counts[, st_spot_id]
+    rctd_obj@originalSpatialRNA@nUMI   = rctd_obj@originalSpatialRNA@nUMI[st_spot_id]
+
+    # C. Subset @results$weights
+    rctd_obj@results$weights = rctd_obj@results$weights[st_spot_id, ]
+    
+    # 3. Report new number of spots after the subset has been done.
+    spot_ids_rctd_new = rownames(rctd_obj@results$weights)
+    message(paste0('New spatial spot count size after subset: ', length(spot_ids_rctd_new)))
+
+    # Return the resulting subset of the object.
+    return(rctd_obj)
+}
+
+subsetted_rctd_obj <- subset_rctd(rctd_obj, st_spot_id)
+
+results <- myRCTD@results
+
+# Normalize the cell type proportions to sum to 1.
+norm_weights = normalize_weights(results$weights) 
+cell_type_names <- myRCTD@cell_type_info$info[[2]] # List of cell type names
+spatialRNA <- myRCTD@spatialRNA
+resultsdir <- '..' 
+dir.create(resultsdir)
+
+cell_type_df <-results$results_df
+write.csv(cell_type_df, paste0(resultsdir,"RCTD_Cell_Type.csv"))
+write.csv(norm_weights, paste0(resultsdir,"RCTD_Cell_Type_Weights.csv"))
+
+# make the plots 
+# Plot the confident weights for each cell type as in full_mode (saved as 
+# 'results/cell_type_weights.pdf')
+plot_weights(cell_type_names, spatialRNA, resultsdir, norm_weights) 
+
+# Plot all weights for each cell type as in full_mode. (saved as 
+# 'results/cell_type_weights_unthreshold.pdf')
+plot_weights_unthreshold(cell_type_names, spatialRNA, resultsdir, norm_weights) 
+
+# Plot the weights for each cell type as in doublet_mode. (saved as 
+# 'results/cell_type_weights_doublets.pdf')
+plot_weights_doublet(cell_type_names, spatialRNA, resultsdir, results$weights_doublet, 
+                     results$results_df) 
+
+# Plot the number of confident pixels of each cell type in 'full_mode'. (saved as 
+# 'results/cell_type_occur.pdf')
+plot_cond_occur(cell_type_names, resultsdir, norm_weights, spatialRNA)
+
+# make a map of all cell types, (saved as 
+# 'results/all_cell_types.pdf')
+plot_all_cell_types(results$results_df, spatialRNA@coords, cell_type_names, resultsdir) 
+
+# doublets
+#obtain a dataframe of only doublets
+doublets <- results$results_df[results$results_df$spot_class == "doublet_certain",] 
+
+# Plot all doublets in space (saved as 
+# 'results/all_doublets.pdf')
+plot_doublets(spatialRNA, doublets, resultsdir, cell_type_names) 
+
+# Plot all doublets in space for each cell type (saved as 
+# 'results/all_doublets_type.pdf')
+plot_doublets_type(spatialRNA, doublets, resultsdir, cell_type_names) 
+
+# a table of frequency of doublet pairs 
+doub_occur <- table(doublets$second_type, doublets$first_type) 
+
+# Plots a stacked bar plot of doublet ocurrences (saved as 
+# 'results/doublet_stacked_bar.pdf')
+plot_doub_occur_stack(doub_occur, resultsdir, cell_type_names) 
