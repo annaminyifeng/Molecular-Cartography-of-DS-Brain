@@ -1,4 +1,4 @@
-# Microenvironment Analysis Tool for Down Syndrome and Euploid Brain
+# Molecular Cartography of the Human and Mouse Down Syndrome Brain
 
 This GitHub repository contains the custom code for microenvironment analysis, aimed at quantifying changes in local cell type compositions between Down Syndrome (DS) and euploid samples. This repository also includes all relevant codes for the snRNA-seq, Slide-seq, and MERFISH data analyses from the associated publication:
 
