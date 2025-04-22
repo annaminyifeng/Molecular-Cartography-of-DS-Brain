@@ -1,0 +1,152 @@
+```{r}
+library(fgsea)
+library(readxl)
+library(data.table)
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+```
+
+```{r}
+input_file <- "../TEsubfamily_final.rds"
+te_obj <- readRDS(input_file)
+te_obj <- ScaleData(te_obj, assay = "TE")
+DefaultAssay(te_obj) <- "TE"
+
+
+data <- read_excel("../TE_families_modified.xlsx")
+grouped_data <- aggregate(all_features ~ `Classification (Final)`, data, function(x) list(x))
+te_list <- with(grouped_data, setNames(lapply(all_features, unlist), `Classification (Final)`))
+te_list <- te_list[names(te_list) != "NA"]
+print(te_list)
+
+all_features <- Features(te_obj)
+solo_TE_features <- all_features[grepl("^SoloTE-", all_features)]
+my_te_set <- te_list
+
+
+```
+
+```{r}
+group.by <- "celltype"
+celltypes <- unique(te_obj@meta.data[[group.by]])
+Idents(te_obj) <- group.by
+gsea_results <- list()
+de_results <- list()
+
+
+for(cell_type in celltypes){
+sub_te_obj <- subset(te_obj, idents = cell_type)
+
+Idents(sub_te_obj) <- "condition"
+DEG <- FindMarkers(sub_te_obj, ident.1 = "DS", ident.2 = "CTL", test.use = "MAST", features = solo_TE_features)
+DEG$gene <- rownames(DEG)
+DEG$celltype <- cell_type
+DEG <- DEG %>% arrange(desc(avg_log2FC))
+de_results[[cell_type]] <- DEG
+
+
+
+
+}
+
+for(cell_type in celltypes){
+  FC <- de_results[[cell_type]]$avg_log2FC
+  de_results[[cell_type]]$gene_name <- sub("^SoloTE-", "", de_results[[cell_type]]$gene)
+  names(FC)  <- de_results[[cell_type]]$gene_name
+  subset_result <- fgseaMultilevel(pathways = my_te_set, 
+                  stats = FC,
+                  minSize  = 1,
+                  eps = 0,
+                  maxSize  = 500,
+                  nPermSimple = 10000)
+  subset_result$celltype <- cell_type
+  gsea_results[[cell_type]] <- subset_result
+  }
+
+
+
+```
+
+
+```{r}
+
+group.by <- "cellsubtype"
+celltypes <- unique(te_obj@meta.data[[group.by]])
+Idents(te_obj) <- group.by
+de_results_sub <- list()
+
+
+for(cell_type in celltypes){
+sub_te_obj <- subset(te_obj, idents = cell_type)
+Idents(sub_te_obj) <- "condition"
+DEG <- FindMarkers(sub_te_obj, ident.1 = "DS", ident.2 = "CTL", test.use = "MAST",features = solo_TE_features)
+DEG$gene <- rownames(DEG)
+DEG$celltype <- cell_type
+DEG <- DEG %>% arrange(desc(avg_log2FC))
+de_results_sub[[cell_type]] <- DEG
+}
+
+
+gsea_results_sub <- list()
+for(cell_type in celltypes){
+  FC <- de_results_sub[[cell_type]]$avg_log2FC
+  de_results_sub[[cell_type]]$gene_name <- sub("^SoloTE-", "", de_results_sub[[cell_type]]$gene)
+  names(FC)  <- de_results_sub[[cell_type]]$gene_name
+  subset_result <- fgseaMultilevel(pathways = my_te_set, 
+                  stats = FC,
+                  minSize  = 1,
+                  eps = 0,
+                  maxSize  = 500,
+                  nPermSimple = 10000)
+  subset_result$celltype <- cell_type
+  gsea_results_sub[[cell_type]] <- subset_result
+  }
+
+```
+
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+
+# Assuming 'df_list' is your list of data frames and 'cell_types' is a vector of cell type names
+combined_df <- bind_rows(gsea_results, .id = "celltype") 
+combined_df_sub <- bind_rows(gsea_results_sub, .id = "cellsubtype") 
+
+
+# Creating the heat map with significance markers
+plot1 <- ggplot(combined_df, aes(x = celltype, y = pathway, fill = NES)) + 
+  geom_tile() +  # This creates the tiles for the heat map
+  scale_fill_gradient2(low = "#440154FF", high = "#1F968BFF", mid = "#f7f7f7", midpoint = 0, name = "NES") +
+  geom_text(aes(label = ifelse(padj < 0.05, "*", "")), color = "black", size = 5) +  # Add asterisks for significant values
+  theme_minimal() +  # Minimal theme for the plot
+  labs(fill = "NES", x = "Cell Type", y = "Pathway")  + # Labeling the axes and legend
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        text = element_text(face = "bold"),
+        legend.title.align = 0) 
+# Save the first plot
+ggsave("../broad_celltype.pdf", plot1, width = 10, height = 4)
+
+# Second heat map
+plot2 <- ggplot(combined_df_sub, aes(x = celltype, y = pathway, fill = NES)) + 
+  geom_tile() +  # This creates the tiles for the heat map
+  scale_fill_gradient2(low = "#440154FF", high = "#1F968BFF", mid = "#f7f7f7", midpoint = 0, name = "NES") +
+  geom_text(aes(label = ifelse(padj < 0.05, "*", "")), color = "black", size = 5) +  # Add asterisks for significant values
+  theme_minimal() +  # Minimal theme for the plot
+  labs(fill = "NES", x = "Cell Type", y = "Pathway")  + # Labeling the axes and legend
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        text = element_text(face = "bold"),
+        legend.title.align = 0) 
+# Save the second plot
+ggsave("../granular_celltype.pdf", plot2, width = 10, height = 4)
+
+
+
+```
+
