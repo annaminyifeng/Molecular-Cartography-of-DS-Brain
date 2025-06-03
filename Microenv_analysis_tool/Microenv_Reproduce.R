@@ -1,4 +1,4 @@
-source("../Niche_Function.R")
+source("/code/Microenv_analysis_tool/Niche_Function.R")
 
 library(tidyverse)
 library(ggplot2)
@@ -9,28 +9,11 @@ library(future)
 library(purrr)
 library(nlme)
 
-# > packageVersion("tidyverse")
-# [1] ‘2.0.0’
-# > packageVersion("ggplot2")
-# [1] ‘3.5.1’
-# > packageVersion("dplyr")
-# [1] ‘1.1.4’
-# > packageVersion("tidyr")
-# [1] ‘1.3.1’
-# > packageVersion("reshape2")
-# [1] ‘1.4.4’
-# > packageVersion("future")
-# [1] ‘1.34.0’
-# > packageVersion("purrr")
-# [1] ‘1.0.2’
-# > packageVersion("nlme")
-# [1] ‘3.1.164’
-
 plan("multisession", workers = 8)
 
-setwd("../Microenv")
-saveDir <- "../Microenv/"
-input <- "../P0_cc_final.rds"
+setwd("/data/")
+saveDir <- "/results/"
+input <- "/data/P0_cc_final.rds"
 cell.group = "celltype"  
 comparason.group = "Condition" #There must be two conditions in this column
 replicate.column = "Replicate" #Column that identifies replicate
@@ -164,19 +147,101 @@ results_df <- results_df %>%
 
 write_csv(results_df, paste0(saveDir, "results_df.csv"))
 
+cell_type_colors <- c("NSC_1"= "#e1a9f6",
+                      "NSC_2"= "#ead7f5",
+                      "NSC_3"= "#d1bbf9",
+                      "NSC_4"= "#cbd9f5",
+                      "oRG"= "#ffcae5",
+                      "vRG"= "#c6c7ff",
+                      "Cycling_progenitors"= "#f9abe7",
+                      "IP"= "#ef87a9",
+                      "Excitatory_neuroblast" = "#d24459",
+                      "IP_IN"= "#bbeeff",
+                      "TAP_1" ="#7eedff",
+                      "TAP_2" ="#88bdf2",
+                      "Inhibitory_neuroblast"= "#6699ed",
+                      "NB_Layer_2-3_ExN"="#e13661",
+                      "NB_Layer_2-4_ExN"= "#c1246b",
+                      "L2-4_ExN"="#be49dd",
+                      "L4-5_ExN"="#896deb",
+                      "L5-6_ExN"="#5732a8",
+                      "Piriform_1"= "#FF4FA7",
+                      "Piriform_2"= "#FF1D8E",
+                      "Mig_L2-3_ExN"= "#d449dd",
+                      "Mig_L2-4_ExN"="#c1246b",
+                      "Layer_1-6a_ExN"= "#BE1B88",
+                      "Layer_2-6a_ExN"= "#9b00ae",
+                      "Layer_1_ExN"=  "#F57373" ,
+                      "Layer_2-3_ExN" = "#E55EA8",
+                      "Layer_4-5_ExN"= "#D449DD", 
+                      "Layer_4-6a_ExN"= "#B544D0",
+                      "Layer_2-6a_ExN"= "#963EC3",
+                      "Layer_5-6a_ExN"= "#7738B6",
+                      "Layer_2-4_ExN"= "#be49dd",
+                      "Layer_2-5_ExN"=  "#a049dd",
+                      "Layer_4-6a_ExN"=  "#8A0DAD",
+                      "Layer_5-6a_ExN"= "#7919AB",
+                      "Layer_6b_ExN"= "#580A70",
+                      "Subplate" = "#5723E7",
+                      "Interneuron"="#3366ff" ,
+                      "Interneuron_1"="#3366ff" ,
+                      "Interneuron_2"= "#31AED3",
+                      "Interneuron_3"="#0096FF",
+                      "Interneuron_4"="#00dbff",
+                      "Interneuron_S1"="#1e3bf6",
+                      "Interneuron_S2"= "#030688",
+                      "Interneuron_M1"= "#2c7fb8",
+                      "Interneuron_M2"="#1d547a",
+                      "Myeloid"="#d9feeb",
+                      "Microglia_1"="#75c8be",
+                      "Micro"="#75c8be",
+                      "Microglia_2"="#008893",
+                      "Astrocyte_progenitors"= "#c7e9b4",
+                      "Astrocyte_1"= "darkolivegreen1",
+                      "Astrocyte_2"="#79d33d",
+                      "Astrocyte_3"="#009000", 
+                      "Astro"="#009000",
+                      "Astrocyte_4"="#02783D",
+                      "Fibroblast"= "#ffbf7f",
+                      "Fibroblast_1"= "#ffbf7f",
+                      "Vasc"="#FCE205",
+                      "Vascular_2"="#FCE205",
+                      "Vascular_2"= "#ffce00",
+                      "Ependymal"="#ffbbb1",
+                      "OPC"= "#ff6f4b",
+                      "OPC_1"= "#ff6f4b",
+                      "OPC_2"= "#ff4000",
+                      "OL"="#fa1b27")
 
-pdf("Microenv_CC.pdf")
+pdf("../results/Microenv_CC.pdf", width = 8, height = 8)
 ggplot(results_df, aes(x = QueryCellType, y = CentroidCellType, fill = MeanDifference)) +
-  geom_tile(colour = "white") +
-  geom_text(aes(label = Significance), vjust = 0.8, color = "black", size = 6) +
-  scale_fill_gradient2(low = "#440154FF", high = "#1F968BFF", mid = "white", midpoint = 0, 
-                       limits = c(-12.65, 16), name = "Log2 Fold Change") +
-  theme_minimal() +
-  labs(title = paste0("MicroEnv Change in ", disease_condition , ' vs ', baseline_condition),
-       x = "Surrounding Cell Type", y = "Center Cell Type", fill = "Log2FC") +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1),
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        text = element_text(face = "bold"),
-        legend.title.align = 0)
+  geom_tile(color = "white") +
+  geom_text(aes(label = Significance), vjust = 0.8, color = "black", size = 30) +  
+  scale_fill_gradient2(
+    low = "#440154FF", high = "#1F968BFF", mid = "white", midpoint = 0,
+    limits = c(-12.65, 16), name = "Log2 Fold Change"
+  ) +
+  coord_fixed() + 
+  theme_minimal(base_size = 20) +
+  labs(
+    title = paste0("MicroEnv Change in ", disease_condition , " vs ", baseline_condition),
+    x = "Surrounding Cell Type",
+    y = "Center Cell Type",
+    fill = "Log2FC"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, size = 20,
+                               color = cell_type_colors[as.character(results_df$QueryCellType)]),
+    axis.text.y = element_text(size = 20,
+                               color = cell_type_colors[as.character(results_df$QueryCellType)]),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    text = element_text(face = "bold"),
+    legend.title.align = 0,
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "lines")
+  )
+
 dev.off()

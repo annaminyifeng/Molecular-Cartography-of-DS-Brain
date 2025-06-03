@@ -1,25 +1,9 @@
 library(Seurat)
 library(ggplot2)
-library(nebula)
 library(tidyr)
 library(dplyr)
 library(ggrepel)
 library(tidyverse)
-
-# > packageVersion("Seurat")
-# [1] ‘5.1.0’
-# > packageVersion("ggplot2")
-# [1] ‘3.5.1’
-# > packageVersion("nebula")
-# [1] ‘1.5.3’
-# > packageVersion("tidyr")
-# [1] ‘1.3.1’
-# > packageVersion("dplyr")
-# [1] ‘1.1.4’
-# > packageVersion("ggrepel")
-# [1] ‘0.9.5’
-# > packageVersion("tidyverse")
-# [1] ‘2.0.0’
 
 BuildNicheAssay <- function(object, fov, group.by, assay = "niche", neighbors.k = 20, 
                             niches.k = 4) 
